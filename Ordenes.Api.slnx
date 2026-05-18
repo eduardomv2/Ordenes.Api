@@ -1,0 +1,8 @@
+<Solution>
+  <Project Path="Ordenes.Api/Ordenes.Api.csproj" />
+  <Project Path="Ordenes.Domain/Ordenes.Domain.csproj" />
+  <Project Path="Ordenes.Tests/Ordenes.Tests.csproj" />
+  <Project Path="Pagos.Api/Pagos.Api.csproj" />
+  <Project Path="Pagos.Domain/Pagos.Domain.csproj" />
+  <Project Path="Pagos.Tests/Pagos.Tests.csproj" />
+</Solution>
