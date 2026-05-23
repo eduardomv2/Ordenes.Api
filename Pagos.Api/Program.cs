@@ -6,7 +6,7 @@ using Pagos.Domain.Entities;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// ── Servicios ─────────────────────────────────────────────────────
+// ── Servicios ─────
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(c =>
 {
@@ -23,7 +23,7 @@ builder.Services.AddDbContext<PagosDbContext>(opt =>
 
 var app = builder.Build();
 
-// ── Middleware ────────────────────────────────────────────────────
+// ── Middleware ─────
 app.UseSwagger();
 app.UseSwaggerUI(c =>
 {
@@ -49,16 +49,16 @@ app.UseExceptionHandler(errApp =>
     });
 });
 
-// ── Migración automática ──────────────────────────────────────────
+// ── Migración automática ────
 using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<PagosDbContext>();
     db.Database.Migrate();
 }
 
-// ══════════════════════════════════════════════════════════════════
+
 // ENDPOINTS
-// ══════════════════════════════════════════════════════════════════
+
 
 // GET /health
 app.MapGet("/health", () => Results.Ok(new
@@ -71,7 +71,7 @@ app.MapGet("/health", () => Results.Ok(new
 .WithTags("Health")
 .WithSummary("Verifica estado del microservicio");
 
-// ── Métodos de pago ───────────────────────────────────────────────
+// ── Métodos de pago ────
 
 // GET /api/pagos/metodos/{idUsuario}
 app.MapGet("/api/pagos/metodos/{idUsuario:int}", async (
@@ -152,7 +152,7 @@ app.MapDelete("/api/pagos/metodos/{id:int}", async (
 .WithTags("Pagos")
 .WithSummary("Elimina un método de pago (borrado lógico)");
 
-// ── Transacciones ─────────────────────────────────────────────────
+// ── Transacciones ─────
 
 // POST /api/pagos/transacciones
 app.MapPost("/api/pagos/transacciones", async (
