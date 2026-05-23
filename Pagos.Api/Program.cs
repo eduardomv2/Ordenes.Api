@@ -3,10 +3,11 @@ using MySql.EntityFrameworkCore.Extensions;
 using Pagos.Api.Data;
 using Pagos.Api.DTOs;
 using Pagos.Domain.Entities;
+using System.Net.Http.Headers;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// ── Servicios ─────
+// ── Servicios ─────────────────────────────────────────────────────
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(c =>
 {
@@ -21,7 +22,21 @@ builder.Services.AddSwaggerGen(c =>
 builder.Services.AddDbContext<PagosDbContext>(opt =>
     opt.UseMySQL(builder.Configuration.GetConnectionString("PagosDb")!));
 
+// ── OpenPay HttpClient ────────────────────────────────────────────
+var merchantId = builder.Configuration["OpenPay:MerchantId"]!;
+var secretKey = builder.Configuration["OpenPay:SecretKey"]!;
+
+builder.Services.AddHttpClient("OpenPay", client =>
+{
+    client.BaseAddress = new Uri($"https://sandbox-api.openpay.mx/v1/{merchantId}/");
+    var credentials = Convert.ToBase64String(
+        System.Text.Encoding.ASCII.GetBytes($"{secretKey}:"));
+    client.DefaultRequestHeaders.Authorization =
+        new AuthenticationHeaderValue("Basic", credentials);
+});
+
 var app = builder.Build();
+
 
 // ── Middleware ─────
 app.UseSwagger();
@@ -223,7 +238,7 @@ app.MapGet("/api/pagos/transacciones/{id:int}", async (
 .WithTags("Pagos")
 .WithSummary("Obtiene una transacción por Id");
 
-// ── Cargos recurrentes ────────────────────────────────────────────
+// ── Cargos recurrentes ──────
 
 // POST /api/pagos/cargos
 app.MapPost("/api/pagos/cargos", async (
@@ -272,6 +287,91 @@ app.MapPost("/api/pagos/cargos", async (
 .WithTags("Pagos")
 .WithSummary("Crea un cargo recurrente mensual");
 
+// POST /api/pagos/cobrar
+app.MapPost("/api/pagos/cobrar", async (
+    CobrarDto dto,
+    PagosDbContext db,
+    IHttpClientFactory httpClientFactory) =>
+{
+    // Verificar que el método de pago existe
+    var metodo = await db.MetodosGuardados
+        .FirstOrDefaultAsync(m => m.Id == dto.IdMetodoPago && m.Status == 1);
+
+    if (metodo is null)
+        return Results.NotFound(new { error = "Método de pago no encontrado." });
+
+    if (dto.Monto <= 0)
+        return Results.BadRequest(new { error = "El monto debe ser mayor a cero." });
+
+    int[] mesesValidos = [1, 3, 6, 12];
+    if (!mesesValidos.Contains(dto.MesesSinIntereses))
+        return Results.BadRequest(new
+        {
+            error = "Los meses sin intereses deben ser 1, 3, 6 o 12.",
+            valoresPermitidos = mesesValidos
+        });
+
+    try
+    {
+        var openPay = httpClientFactory.CreateClient("OpenPay");
+
+        // Construir el request a OpenPay
+        var cargo = new
+        {
+            source_id = metodo.TokenIdOpenPay,
+            method = "card",
+            amount = dto.Monto,
+            currency = "MXN",
+            description = $"Orden #{dto.IdOrden}",
+            order_id = $"orden-{dto.IdOrden}-{Guid.NewGuid().ToString()[..8]}",
+            device_session_id = dto.DeviceSessionId,
+            installments = dto.MesesSinIntereses > 1 ? dto.MesesSinIntereses : (int?)null
+        };
+
+        var response = await openPay.PostAsJsonAsync("charges", cargo);
+        var contenido = await response.Content.ReadFromJsonAsync<OpenPayChargeResponse>();
+
+        // Guardar la transacción
+        var transaccion = new PAG_Transaccion
+        {
+            IdOrden = dto.IdOrden,
+            IdMetodoPago = dto.IdMetodoPago,
+            Monto = dto.Monto,
+            MesesSinIntereses = dto.MesesSinIntereses,
+            IdTransaccionOpenPay = contenido?.Id,
+            EstadoPago = response.IsSuccessStatusCode ? "exitoso" : "fallido",
+            EsCargoRecurrente = false,
+            Status = 1
+        };
+
+        db.Transacciones.Add(transaccion);
+        await db.SaveChangesAsync();
+
+        if (response.IsSuccessStatusCode)
+            return Results.Ok(new
+            {
+                transaccion.Id,
+                transaccion.EstadoPago,
+                transaccion.Monto,
+                IdTransaccionOpenPay = contenido?.Id,
+                Status = contenido?.Status
+            });
+
+        return Results.BadRequest(new
+        {
+            error = "El cobro fue rechazado.",
+            detalle = contenido?.ErrorMessage
+        });
+    }
+    catch (Exception ex)
+    {
+        return Results.Problem(ex.Message);
+    }
+})
+.WithName("CobrarConOpenPay")
+.WithTags("Pagos")
+.WithSummary("Procesa un cobro con OpenPay");
+
 // GET /api/pagos/cargos/{idUsuario}
 app.MapGet("/api/pagos/cargos/{idUsuario:int}", async (
     int idUsuario,
@@ -288,3 +388,15 @@ app.MapGet("/api/pagos/cargos/{idUsuario:int}", async (
 .WithSummary("Obtiene los cargos recurrentes de un usuario");
 
 app.Run();
+
+record CobrarDto(
+    int IdOrden,
+    int IdMetodoPago,
+    decimal Monto,
+    int MesesSinIntereses,
+    string DeviceSessionId);
+
+record OpenPayChargeResponse(
+    string? Id,
+    string? Status,
+    string? ErrorMessage);
