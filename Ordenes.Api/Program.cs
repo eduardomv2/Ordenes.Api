@@ -98,7 +98,6 @@ app.MapGet("/api/ordenes/{id:int}", async (
 .WithTags("Ordenes")
 .WithSummary("Obtiene una orden por Id");
 
-// GET /api/ordenes/usuario/{idUsuario}
 app.MapGet("/api/ordenes/usuario/{idUsuario:int}", async (
     int idUsuario,
     OrdenesDbContext db) =>
@@ -107,6 +106,32 @@ app.MapGet("/api/ordenes/usuario/{idUsuario:int}", async (
         .Include(o => o.EstadoOrden)
         .Include(o => o.Detalles)
         .Where(o => o.IdUsuario == idUsuario && o.Status == 1)
+        .Select(o => new
+        {
+            o.Id,
+            o.IdUsuario,
+            o.IdDireccionEnvio,
+            o.IdEstadoOrden,
+            o.Subtotal,
+            o.DescuentoAplicado,
+            o.TotalFinal,
+            o.ClaveIdempotencia,
+            EstadoOrden = new
+            {
+                o.EstadoOrden.Id,
+                o.EstadoOrden.Nombre
+            },
+            Detalles = o.Detalles.Select(d => new
+            {
+                d.Id,
+                d.IdProducto,
+                d.NombreProducto,
+                d.EsElectronica,
+                d.Cantidad,
+                d.PrecioUnitario,
+                d.DescuentoLinea
+            }).ToList()
+        })
         .ToListAsync();
 
     return Results.Ok(ordenes);

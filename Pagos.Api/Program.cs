@@ -240,69 +240,18 @@ app.MapGet("/api/pagos/transacciones/{id:int}", async (
 
 // ── Cargos recurrentes ──────
 
-// POST /api/pagos/cargos
-app.MapPost("/api/pagos/cargos", async (
-    CrearCargoRecurrenteDto dto,
-    PagosDbContext db) =>
-{
-    if (dto.DiaCobro < 1 || dto.DiaCobro > 28)
-        return Results.BadRequest(new
-        { error = "El día de cobro debe estar entre 1 y 28." });
-
-    var metodoExiste = await db.MetodosGuardados
-        .AnyAsync(m => m.Id == dto.IdMetodoPago && m.Status == 1);
-
-    if (!metodoExiste)
-        return Results.NotFound(new
-        { error = "Método de pago no encontrado." });
-
-    var hoy = DateTime.UtcNow;
-    var proximoCobro = new DateTime(
-        hoy.Year,
-        hoy.Month,
-        dto.DiaCobro);
-
-    if (proximoCobro < hoy)
-        proximoCobro = proximoCobro.AddMonths(1);
-
-    var cargo = new PAG_CargoRecurrente
-    {
-        IdUsuario = dto.IdUsuario,
-        IdMetodoPago = dto.IdMetodoPago,
-        MontoMensual = dto.MontoMensual,
-        DiaCobro = dto.DiaCobro,
-        Activo = true,
-        ProximoCobro = proximoCobro,
-        Status = 1
-    };
-
-    db.CargosRecurrentes.Add(cargo);
-    await db.SaveChangesAsync();
-
-    return Results.Created(
-        $"/api/pagos/cargos/{cargo.Id}",
-        new { cargo.Id, cargo.DiaCobro, cargo.ProximoCobro });
-})
-.WithName("CrearCargoRecurrente")
-.WithTags("Pagos")
-.WithSummary("Crea un cargo recurrente mensual");
-
 // POST /api/pagos/cobrar
 app.MapPost("/api/pagos/cobrar", async (
     CobrarDto dto,
     PagosDbContext db,
     IHttpClientFactory httpClientFactory) =>
 {
-    // Verificar que el método de pago existe
     var metodo = await db.MetodosGuardados
         .FirstOrDefaultAsync(m => m.Id == dto.IdMetodoPago && m.Status == 1);
-
     if (metodo is null)
         return Results.NotFound(new { error = "Método de pago no encontrado." });
-
     if (dto.Monto <= 0)
         return Results.BadRequest(new { error = "El monto debe ser mayor a cero." });
-
     int[] mesesValidos = [1, 3, 6, 12];
     if (!mesesValidos.Contains(dto.MesesSinIntereses))
         return Results.BadRequest(new
@@ -310,28 +259,67 @@ app.MapPost("/api/pagos/cobrar", async (
             error = "Los meses sin intereses deben ser 1, 3, 6 o 12.",
             valoresPermitidos = mesesValidos
         });
-
     try
     {
         var openPay = httpClientFactory.CreateClient("OpenPay");
 
-        // Construir el request a OpenPay
-        var cargo = new
+        // Paso 1: Crear token de tarjeta
+        var tokenDict = new Dictionary<string, object>
         {
-            source_id = metodo.TokenIdOpenPay,
-            method = "card",
-            amount = dto.Monto,
-            currency = "MXN",
-            description = $"Orden #{dto.IdOrden}",
-            order_id = $"orden-{dto.IdOrden}-{Guid.NewGuid().ToString()[..8]}",
-            device_session_id = dto.DeviceSessionId,
-            installments = dto.MesesSinIntereses > 1 ? dto.MesesSinIntereses : (int?)null
+            ["card_number"] = dto.NumeroTarjeta,
+            ["holder_name"] = dto.NombreTarjeta.Trim(),
+            ["expiration_year"] = dto.AnioExpiracion.Length == 4
+                ? dto.AnioExpiracion[2..] : dto.AnioExpiracion,
+            ["expiration_month"] = dto.MesExpiracion,
+            ["cvv2"] = dto.Cvv
         };
 
-        var response = await openPay.PostAsJsonAsync("charges", cargo);
-        var contenido = await response.Content.ReadFromJsonAsync<OpenPayChargeResponse>();
+        var jsonToken = System.Text.Json.JsonSerializer.Serialize(tokenDict);
+        var tokenContent = new StringContent(jsonToken,
+            System.Text.Encoding.UTF8, "application/json");
+        var tokenResponse = await openPay.PostAsync("tokens", tokenContent);
+        var tokenRaw = await tokenResponse.Content.ReadAsStringAsync();
+        Console.WriteLine($"Token response: {tokenRaw}");
 
-        // Guardar la transacción
+        var tokenData = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, object>>(tokenRaw);
+
+        if (!tokenResponse.IsSuccessStatusCode || tokenData is null)
+            return Results.BadRequest(new { error = "Error al tokenizar la tarjeta." });
+
+        var sourceId = tokenData["id"].ToString();
+
+        // Paso 2: Hacer el cargo con source_id
+        var cargoDict = new Dictionary<string, object>
+        {
+            ["method"] = "card",
+            ["source_id"] = sourceId!,
+            ["amount"] = Math.Round(dto.Monto, 2),
+            ["currency"] = "MXN",
+            ["description"] = $"Orden #{dto.IdOrden}",
+            ["order_id"] = $"orden-{Guid.NewGuid().ToString()[..8]}",
+            ["device_session_id"] = "kR1MiQhz2otdIuUlQkbEyitIqVMiI16f",
+            ["customer"] = new
+            {
+                name = dto.NombreTarjeta.Trim(),
+                email = $"cliente{dto.IdUsuario}@tienda.com"
+            }
+        };
+
+        if (dto.MesesSinIntereses > 1)
+            cargoDict["installments"] = dto.MesesSinIntereses;
+
+        var jsonCargo = System.Text.Json.JsonSerializer.Serialize(cargoDict);
+        Console.WriteLine($"Enviando a OpenPay: {jsonCargo}");
+        var content = new StringContent(jsonCargo,
+            System.Text.Encoding.UTF8, "application/json");
+        var response = await openPay.PostAsync("charges", content);
+        var rawContent = await response.Content.ReadAsStringAsync();
+        Console.WriteLine($"OpenPay response: {rawContent}");
+
+        var contenido = System.Text.Json.JsonSerializer.Deserialize<OpenPayChargeResponse>(
+            rawContent, new System.Text.Json.JsonSerializerOptions
+            { PropertyNameCaseInsensitive = true });
+
         var transaccion = new PAG_Transaccion
         {
             IdOrden = dto.IdOrden,
@@ -343,7 +331,6 @@ app.MapPost("/api/pagos/cobrar", async (
             EsCargoRecurrente = false,
             Status = 1
         };
-
         db.Transacciones.Add(transaccion);
         await db.SaveChangesAsync();
 
@@ -392,9 +379,14 @@ app.Run();
 record CobrarDto(
     int IdOrden,
     int IdMetodoPago,
+    int IdUsuario,
     decimal Monto,
     int MesesSinIntereses,
-    string DeviceSessionId);
+    string NumeroTarjeta,
+    string NombreTarjeta,
+    string MesExpiracion,
+    string AnioExpiracion,
+    string Cvv);
 
 record OpenPayChargeResponse(
     string? Id,
