@@ -49,16 +49,16 @@ app.UseExceptionHandler(errApp =>
     });
 });
 
-// ── Migración automática ──────────────────────────────────────────
+// ── Migración automática ─────
 using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<OrdenesDbContext>();
     db.Database.Migrate();
 }
 
-// ══════════════════════════════════════════════════════════════════
+
 // ENDPOINTS
-// ══════════════════════════════════════════════════════════════════
+
 
 // GET /health
 app.MapGet("/health", () => Results.Ok(new
@@ -201,6 +201,32 @@ app.MapPost("/api/ordenes", async (
 .WithTags("Ordenes")
 .WithSummary("Crea una nueva orden")
 .WithDescription("Si la ClaveIdempotencia ya existe retorna la orden original sin duplicar.");
+
+
+
+// GET /api/ordenes/productos-mas-vendidos
+app.MapGet("/api/ordenes/productos-mas-vendidos", async (
+    OrdenesDbContext db) =>
+{
+    var masVendidos = await db.Detalles
+        .Where(d => d.Status == 1)
+        .GroupBy(d => d.IdProducto)
+        .Select(g => new
+        {
+            IdProducto = g.Key,
+            TotalVendido = g.Sum(d => d.Cantidad)
+        })
+        .OrderByDescending(x => x.TotalVendido)
+        .Take(6)
+        .Select(x => x.IdProducto)
+        .ToListAsync();
+
+    return Results.Ok(masVendidos);
+})
+.WithName("ProductosMasVendidos")
+.WithTags("Ordenes")
+.WithSummary("Obtiene los IDs de los 6 productos más vendidos");
+
 
 // PATCH /api/ordenes/{id}/estado
 app.MapMethods("/api/ordenes/{id:int}/estado", ["PATCH"], async (
